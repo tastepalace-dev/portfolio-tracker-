@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Portfolio Tracker</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 16px; color: #222; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  h1 { font-size: 22px; margin: 0 0 12px; }
+  h3 { margin: 0 0 8px; }
+  input { width: 100%; padding: 10px; margin: 4px 0 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+  button { width: 100%; padding: 12px; background: #0a7d4f; color: #fff; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 4px; }
+  button.secondary { background: #2c3e50; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 4px; border-bottom: 1px solid #eee; }
+  .gain { color: #0a7d4f; }
+  .loss { color: #c0392b; }
+  .del { background: #c0392b; width: auto; padding: 4px 8px; font-size: 12px; margin: 0; }
+  .total { font-size: 18px; font-weight: bold; }
+  .status { font-size: 13px; color: #555; margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>My Portfolio</h1>
+  <div>Total value: <span class="total" id="totalValue">0.00</span></div>
+  <div>Total profit / loss: <span class="total" id="totalGain">0.00</span></div>
+</div>
+
+<div class="card">
+  <h3>Finnhub API key</h3>
+  <input id="apiKey" type="password" placeholder="Paste your Finnhub key once">
+  <button class="secondary" onclick="saveKey()">Save key</button>
+  <div class="status" id="keyStatus"></div>
+</div>
+
+<div class="card">
+  <h3>Add holding</h3>
+  <input id="name" placeholder="Name (e.g. Apple)">
+  <input id="ticker" placeholder="Ticker for live price (e.g. AAPL)">
+  <input id="shares" type="number" placeholder="How many units you own">
+  <input id="buyPrice" type="number" placeholder="Price you paid per unit">
+  <input id="nowPrice" type="number" placeholder="Current price per unit (optional if ticker is set)">
+  <button onclick="addHolding()">Add</button>
+</div>
+
+<div class="card">
+  <button class="secondary" onclick="updatePrices()">Update live prices</button>
+  <div class="status" id="priceStatus"></div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Name</th><th>Value</th><th>Profit/Loss</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p id="empty">No holdings yet. Add one above.</p>
+</div>
+
+<script>
+  let holdings = JSON.parse(localStorage.getItem("holdings") || "[]");
+  let apiKey = localStorage.getItem("finnhubKey") || "";
+
+  function money(n) {
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function save() {
+    localStorage.setItem("holdings", JSON.stringify(holdings));
+  }
+
+  function saveKey() {
+    const value = document.getElementById("apiKey").value.trim();
+    if (!value) {
+      alert("Paste your Finnhub key first.");
+      return;
+    }
+    apiKey = value;
+    localStorage.setItem("finnhubKey", apiKey);
+    document.getElementById("apiKey").value = "";
+    document.getElementById("keyStatus").textContent = "Key saved on this device.";
+  }
+
+  function addHolding() {
+    const name = document.getElementById("name").value.trim();
+    const ticker = document.getElementById("ticker").value.trim().toUpperCase();
+    const shares = parseFloat(document.getElementById("shares").value);
+    const buyPrice = parseFloat(document.getElementById("buyPrice").value);
+    let nowPrice = parseFloat(document.getElementById("nowPrice").value);
+
+    if (!name || isNaN(shares) || isNaN(buyPrice)) {
+      alert("Please fill in name, units and the price you paid.");
+      return;
+    }
+    if (isNaN(nowPrice)) {
+      if (!ticker) {
+        alert("Enter the current price, or enter a ticker for a live price.");
+        return;
+      }
+      nowPrice = 0;
+    }
+
+    holdings.push({ name, ticker, shares, buyPrice, nowPrice });
+    save();
+    clearForm();
+    render();
+
+    if (ticker && isNaN(parseFloat(document.getElementById("nowPrice").value))) {
+      updatePrices();
+    }
+  }
+
+  function deleteHolding(index) {
+    if (confirm("Delete this holding?")) {
+      holdings.splice(index, 1);
+      save();
+      render();
+    }
+  }
+
+  function clearForm() {
+    ["name", "ticker", "shares", "buyPrice", "nowPrice"].forEach(id => {
+      document.getElementById(id).value = "";
+    });
+  }
+
+  async function fetchPrice(ticker) {
+    const url = "https://finnhub.io/api/v1/quote?symbol=" +
+      encodeURIComponent(ticker) + "&token=" + encodeURIComponent(apiKey);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Request failed (" + response.status + ")");
+    const data = await response.json();
+    if (!data.c || data.c <= 0) throw new Error("No price found for " + ticker);
+    return data.c;
+  }
+
+  async function updatePrices() {
+    const status = document.getElementById("priceStatus");
+    if (!apiKey) {
+      status.textContent = "Save your Finnhub key first.";
+      return;
+    }
+    const withTicker = holdings.filter(h => h.ticker);
+    if (withTicker.length === 0) {
+      status.textContent = "Add a ticker to a holding to get its live price.";
+      return;
+    }
+
+    status.textContent = "Updating prices...";
+    const failed = [];
+    for (const h of withTicker) {
+      try {
+        h.nowPrice = await fetchPrice(h.ticker);
+      } catch (err) {
+        failed.push(h.ticker);
+      }
+    }
+    save();
+    render();
+    status.textContent = failed.length
+      ? "Could not update: " + failed.join(", ") + ". Check the ticker or key."
+      : "Prices updated just now.";
+  }
+
+  function render() {
+    const rows = document.getElementById("rows");
+    rows.innerHTML = "";
+    let totalValue = 0;
+    let totalGain = 0;
+
+    holdings.forEach((h, i) => {
+      const value = h.shares * h.nowPrice;
+      const gain = (h.nowPrice - h.buyPrice) * h.shares;
+      totalValue += value;
+      totalGain += gain;
+
+      const cls = gain >= 0 ? "gain" : "loss";
+      const sign = gain >= 0 ? "+" : "";
+
+      rows.innerHTML += `
+        <tr>
+          <td>${h.name}</td>
+          <td>${money(value)}</td>
+          <td class="${cls}">${sign}${money(gain)}</td>
+          <td><button class="del" onclick="deleteHolding(${i})">X</button></td>
+        </tr>`;
+    });
+
+    document.getElementById("totalValue").textContent = money(totalValue);
+    const totalCls = totalGain >= 0 ? "gain" : "loss";
+    const totalSign = totalGain >= 0 ? "+" : "";
+    const gainEl = document.getElementById("totalGain");
+    gainEl.textContent = totalSign + money(totalGain);
+    gainEl.className = "total " + totalCls;
+
+    document.getElementById("empty").style.display = holdings.length ? "none" : "block";
+  }
+
+  render();
+</script>
+
+</body>
+</html>
